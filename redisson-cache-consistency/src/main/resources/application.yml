@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: redisson-cache-consistency
+  redis:
+    host: 127.0.0.1
+    port: 6379
+    redisson:
+      config: |
+        singleServerConfig:
+          address: "redis://127.0.0.1:6379"
+server:
+  port: 8080
