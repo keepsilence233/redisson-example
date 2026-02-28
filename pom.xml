@@ -11,6 +11,7 @@
 
     <modules>
         <module>redisson-cache-consistency</module>
+        <module>redisson-hyperloglog-visit</module>
     </modules>
 
     <properties>
