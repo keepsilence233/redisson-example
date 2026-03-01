@@ -18,14 +18,14 @@ public class VisitController {
      * Record a new visit for a target ID.
      *
      * @param targetId The ID of the product or store (e.g., product-1)
-     * @param userId The ID of the visiting user
+     * @param userId   The ID of the visiting user
      * @return Confirmation message
      */
     @PostMapping("/{targetId}")
     public ResponseEntity<String> recordVisit(
             @PathVariable("targetId") String targetId,
-            @RequestParam String userId) {
-        
+            @RequestParam("userId") String userId) {
+
         visitService.recordVisit(targetId, userId);
         return ResponseEntity.ok("Visit recorded for user: " + userId + " on target: " + targetId);
     }
@@ -37,7 +37,7 @@ public class VisitController {
      * @return The estimated number of unique visitors
      */
     @GetMapping("/{targetId}/count")
-    public ResponseEntity<Long> getVisitCount(@PathVariable String targetId) {
+    public ResponseEntity<Long> getVisitCount(@PathVariable("targetId") String targetId) {
         long count = visitService.getVisitCount(targetId);
         return ResponseEntity.ok(count);
     }
