@@ -8,4 +8,4 @@ spring:
     redisson:
       config: |
         singleServerConfig:
-          address: "redis://127.0.0.1:6379"
+          address: "redis://host.docker.internal:6379"
