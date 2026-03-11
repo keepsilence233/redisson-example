@@ -44,3 +44,7 @@ out/
 
 # vscode
 .vscode/
+
+/jmeter/*.log
+
+.DS_Store

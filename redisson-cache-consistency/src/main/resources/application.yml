@@ -1,10 +1,24 @@
 spring:
   application:
     name: redisson-cache-consistency
+  datasource:
+    hikari:
+      maximum-pool-size: 50   # 增加数据库连接数
+      minimum-idle: 10
+      connection-timeout: 20000
   redis:
     redisson:
       config: |
         singleServerConfig:
           address: "redis://host.docker.internal:6379"
+          connectionPoolSize: 128      # 调大连接池
+          connectionMinimumIdleSize: 32
+          connectTimeout: 3000         # 超时时间设长一点
+          timeout: 3000
 server:
   port: 8080
+  tomcat:
+    threads:
+      max: 500       # 至少要大于你的压测总线程数
+      min-spare: 50
+    accept-count: 200 # 队列长度

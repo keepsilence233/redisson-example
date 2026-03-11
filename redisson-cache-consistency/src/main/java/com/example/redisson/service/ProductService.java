@@ -69,9 +69,10 @@ public class ProductService {
      */
     public ProductService(RedissonClient redissonClient) {
         this.redissonClient = redissonClient;
-        // 初始化一些测试数据到模拟数据库
-        productDatabase.put(1L, new Product(1L, "Laptop", 100));
-        productDatabase.put(2L, new Product(2L, "Smartphone", 200));
+        // 初始化一些测试数据到模拟数据库（1..500）
+        for (long i = 1; i <= 500; i++) {
+            productDatabase.put(i, new Product(i, "Product-" + i, (int) (100 + i)));
+        }
     }
 
     /**
