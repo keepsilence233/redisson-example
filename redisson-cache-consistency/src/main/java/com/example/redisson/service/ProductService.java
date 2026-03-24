@@ -266,7 +266,7 @@ public class ProductService {
             try {
                 boolean deleted = bucket.delete();
                 if (deleted) {
-                    log.debug("Cache deleted successfully for product ID: {}", id);
+                    log.info("Cache deleted successfully for product ID: {}", id);
                     return;
                 }
                 log.warn("Cache delete returned false for product ID: {}, retry {}/{}", id, i + 1, CACHE_DELETE_RETRY_TIMES);
