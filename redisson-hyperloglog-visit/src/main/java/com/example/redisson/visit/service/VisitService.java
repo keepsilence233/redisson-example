@@ -40,7 +40,7 @@ public class VisitService {
         String key = VISIT_KEY_PREFIX + targetId;
         RHyperLogLog<String> hyperLogLog = redissonClient.getHyperLogLog(key);
         hyperLogLog.add(userId);
-        log.debug("Recorded visit for user: {} on target: {}", userId, targetId);
+        log.info("Recorded visit for user: {} on target: {}", userId, targetId);
     }
 
     /**
@@ -54,7 +54,7 @@ public class VisitService {
         String key = VISIT_KEY_PREFIX + targetId;
         RHyperLogLog<String> hyperLogLog = redissonClient.getHyperLogLog(key);
         long count = hyperLogLog.count();
-        log.debug("Get visit count for target: {}: {}", targetId, count);
+        log.info("Get visit count for target: {}: {}", targetId, count);
         return count;
     }
 }

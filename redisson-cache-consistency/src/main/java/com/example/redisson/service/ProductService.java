@@ -38,12 +38,6 @@ public class ProductService {
      * 商品分布式锁前缀
      */
     private static final String PRODUCT_LOCK_PREFIX = "product:lock:";
-    /**
-     * 缓存空值占位（用于防止缓存穿透）
-     * 约定 ID=-1 为保留值，实际业务不应使用
-     */
-    private static final long NULL_PRODUCT_ID = -1L;
-    private static final Product NULL_PRODUCT = new Product(NULL_PRODUCT_ID, "__NULL__", 0);
 
     /**
      * 正常缓存与空值缓存的 TTL
@@ -51,6 +45,10 @@ public class ProductService {
     private static final Duration PRODUCT_CACHE_TTL = Duration.ofHours(1);
     private static final Duration NULL_CACHE_TTL = Duration.ofMinutes(2);
     private static final int NULL_CACHE_JITTER_SECONDS = 30;
+    /**
+     * 正常缓存的 TTL 抖动范围（分钟），避免缓存雪崩
+     */
+    private static final int PRODUCT_CACHE_JITTER_MINUTES = 10;
     /**
      * 锁等待与缓存重试策略（折中方案）
      * - 读锁等待时间稍长，尽量保证读路径可用
@@ -108,7 +106,7 @@ public class ProductService {
             Product cachedProduct = bucket.get();
             if (cachedProduct != null) {
                 if (isNullProduct(cachedProduct)) {
-                    log.info("Cache hit (null placeholder) for product ID: {}", id);
+                    log.info("Cache hit (product not exists) for product ID: {}", id);
                     return null;
                 }
                 log.info("Cache hit for product ID: {}", id);
@@ -138,7 +136,7 @@ public class ProductService {
                 Product cachedProduct = bucket.get();
                 if (cachedProduct != null) {
                     if (isNullProduct(cachedProduct)) {
-                        log.info("Cache hit (null placeholder) after write lock for product ID: {}", id);
+                        log.info("Cache hit (product not exists) after write lock for product ID: {}", id);
                         return null;
                     }
                     log.info("Cache hit after write lock for product ID: {}", id);
@@ -149,13 +147,14 @@ public class ProductService {
                 log.info("Cache miss for product ID: {}, querying DB...", id);
                 Product dbProduct = productDatabase.get(id);
                 if (dbProduct != null) {
-                    bucket.set(dbProduct, PRODUCT_CACHE_TTL);
-                    log.info("Updated cache for product ID: {}", id);
+                    Duration ttl = productCacheTtlWithJitter();
+                    bucket.set(dbProduct, ttl);
+                    log.info("Updated cache for product ID: {} with TTL {}s", id, ttl.toSeconds());
                 } else {
                     // 缓存空值，短 TTL + 抖动，防止缓存穿透与雪崩
                     Duration nullTtl = nullCacheTtlWithJitter();
                     bucket.set(NULL_PRODUCT, nullTtl);
-                    log.info("Cached null placeholder for product ID: {} with TTL {}s", id, nullTtl.toSeconds());
+                    log.info("Cached null (product not exists) for product ID: {} with TTL {}s", id, nullTtl.toSeconds());
                 }
                 return dbProduct;
             }
@@ -176,7 +175,7 @@ public class ProductService {
             Product cachedProduct = bucket.get();
             if (cachedProduct != null) {
                 if (isNullProduct(cachedProduct)) {
-                    log.info("Cache hit (null placeholder) after retry for product ID: {}", id);
+                    log.info("Cache hit (product not exists) after retry for product ID: {}", id);
                     return null;
                 }
                 log.info("Cache hit after retry for product ID: {}", id);
@@ -245,13 +244,33 @@ public class ProductService {
         }
     }
 
+    /**
+     * 判断是否为空值占位符
+     * 使用负数 ID 作为空值标记，实际业务 ID 不应为负数
+     */
+    private static final long NULL_PRODUCT_ID = -1L;
+
     private boolean isNullProduct(Product product) {
         return product != null && Objects.equals(product.getId(), NULL_PRODUCT_ID);
     }
 
+    /**
+     * 获取空值占位符对象
+     */
+    private static final Product NULL_PRODUCT = new Product(NULL_PRODUCT_ID, "__NULL__", 0);
+
     private Duration nullCacheTtlWithJitter() {
         int jitter = ThreadLocalRandom.current().nextInt(NULL_CACHE_JITTER_SECONDS + 1);
         return NULL_CACHE_TTL.plusSeconds(jitter);
+    }
+
+    /**
+     * 为正常缓存添加随机抖动，避免缓存雪崩
+     * @return 带抖动的 TTL（基准值 ± jitter）
+     */
+    private Duration productCacheTtlWithJitter() {
+        int jitter = ThreadLocalRandom.current().nextInt(PRODUCT_CACHE_JITTER_MINUTES * 2 + 1) - PRODUCT_CACHE_JITTER_MINUTES;
+        return PRODUCT_CACHE_TTL.plusSeconds(jitter * 60);
     }
 
     /**
