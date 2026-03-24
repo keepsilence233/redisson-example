@@ -61,6 +61,11 @@ public class ProductService {
     private static final long WRITE_LOCK_WAIT_MILLIS = 300;
     private static final int CACHE_RETRY_TIMES = 3;
     private static final long CACHE_RETRY_SLEEP_MILLIS = 50;
+    /**
+     * 缓存删除重试策略
+     */
+    private static final int CACHE_DELETE_RETRY_TIMES = 3;
+    private static final long CACHE_DELETE_RETRY_SLEEP_MILLIS = 50;
 
     /**
      * 构造方法，初始化服务并加载部分模拟数据
@@ -222,7 +227,7 @@ public class ProductService {
 
             // 3. 删除缓存（对于缓存一致性，更新数据库后删除缓存通常比直接更新缓存更安全）
             RBucket<Product> bucket = redissonClient.getBucket(PRODUCT_CACHE_PREFIX + id);
-            bucket.delete();
+            deleteCacheWithRetry(bucket, id);
             log.info("Evicted cache for product ID: {}", id);
 
             return product;
@@ -247,5 +252,34 @@ public class ProductService {
     private Duration nullCacheTtlWithJitter() {
         int jitter = ThreadLocalRandom.current().nextInt(NULL_CACHE_JITTER_SECONDS + 1);
         return NULL_CACHE_TTL.plusSeconds(jitter);
+    }
+
+    /**
+     * 删除缓存时带重试机制
+     * 如果删除失败，会重试多次，避免缓存未删除导致数据不一致
+     *
+     * @param bucket 缓存桶
+     * @param id 商品 ID
+     */
+    private void deleteCacheWithRetry(RBucket<Product> bucket, Long id) {
+        for (int i = 0; i < CACHE_DELETE_RETRY_TIMES; i++) {
+            try {
+                boolean deleted = bucket.delete();
+                if (deleted) {
+                    log.debug("Cache deleted successfully for product ID: {}", id);
+                    return;
+                }
+                log.warn("Cache delete returned false for product ID: {}, retry {}/{}", id, i + 1, CACHE_DELETE_RETRY_TIMES);
+            } catch (Exception e) {
+                log.warn("Cache delete failed for product ID: {}, retry {}/{}", id, i + 1, CACHE_DELETE_RETRY_TIMES, e);
+            }
+            try {
+                Thread.sleep(CACHE_DELETE_RETRY_SLEEP_MILLIS);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("缓存删除被中断", ie);
+            }
+        }
+        log.error("Cache delete failed after {} retries for product ID: {}", CACHE_DELETE_RETRY_TIMES, id);
     }
 }
