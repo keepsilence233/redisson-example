@@ -1,11 +1,6 @@
 spring:
   application:
     name: redisson-cache-consistency
-  datasource:
-    hikari:
-      maximum-pool-size: 50   # 增加数据库连接数
-      minimum-idle: 10
-      connection-timeout: 20000
   redis:
     redisson:
       config: |
