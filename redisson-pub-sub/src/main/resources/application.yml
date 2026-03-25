@@ -1,0 +1,19 @@
+spring:
+  application:
+    name: redisson-pub-sub
+  redis:
+    redisson:
+      config: |
+        singleServerConfig:
+          address: "redis://host.docker.internal:6379"
+          connectionPoolSize: 128
+          connectionMinimumIdleSize: 32
+          connectTimeout: 3000
+          timeout: 3000
+server:
+  port: 8082
+  tomcat:
+    threads:
+      max: 500
+      min-spare: 50
+    accept-count: 200

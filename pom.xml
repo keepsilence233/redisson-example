@@ -12,6 +12,7 @@
     <modules>
         <module>redisson-cache-consistency</module>
         <module>redisson-hyperloglog-visit</module>
+        <module>redisson-pub-sub</module>
     </modules>
 
     <properties>
