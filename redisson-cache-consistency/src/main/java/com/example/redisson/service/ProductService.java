@@ -6,6 +6,8 @@ import org.redisson.api.RBucket;
 import org.redisson.api.RReadWriteLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Duration;
 import java.util.Map;
@@ -50,13 +52,15 @@ public class ProductService {
      */
     private static final int PRODUCT_CACHE_JITTER_MINUTES = 10;
     /**
-     * 锁等待与缓存重试策略（折中方案）
-     * - 读锁等待时间稍长，尽量保证读路径可用
+     * 锁等待与缓存重试策略
+     * - 读锁等待时间适中，兼顾并发与响应速度
      * - 写锁等待时间较短，避免用户等待太久
-     * - 写锁获取失败后，短暂重试读取缓存，避免误判为“数据不存在”
      */
     private static final long READ_LOCK_WAIT_SECONDS = 3;
     private static final long WRITE_LOCK_WAIT_MILLIS = 300;
+    /**
+     * 缓存未命中时，重试等待其他线程回填的间隔与次数
+     */
     private static final int CACHE_RETRY_TIMES = 3;
     private static final long CACHE_RETRY_SLEEP_MILLIS = 50;
     /**
@@ -80,10 +84,10 @@ public class ProductService {
 
     /**
      * 获取商品信息
-     * 采用“短写锁 + 缓存重试”的折中方案：
-     * 1) 先走读锁读缓存（并发友好）
-     * 2) 缓存未命中后释放读锁，尝试短时写锁重建缓存
-     * 3) 写锁未获取到，则短暂重试读取缓存，避免误判不存在
+     * 采用"读写锁 + 缓存回填"模式：
+     * 1) 读锁：并发读取缓存，命中直接返回
+     * 2) 读锁未命中：释放读锁，尝试写锁回填缓存
+     * 3) 写锁未获取到：重试读取缓存（其他线程可能已回填）
      *
      * @param id 商品 ID
      * @return 商品详情
@@ -92,25 +96,20 @@ public class ProductService {
         RReadWriteLock rwLock = redissonClient.getReadWriteLock(PRODUCT_LOCK_PREFIX + id);
         RBucket<Product> bucket = redissonClient.getBucket(PRODUCT_CACHE_PREFIX + id);
 
-        // 1) 获取读锁：允许并发读取，尽量快速返回
-        boolean isLocked = false;
+        // 1) 尝试读锁：允许并发读取缓存
+        boolean isReadLocked = false;
         try {
-            isLocked = rwLock.readLock().tryLock(READ_LOCK_WAIT_SECONDS, TimeUnit.SECONDS);
-            if (!isLocked) {
+            isReadLocked = rwLock.readLock().tryLock(READ_LOCK_WAIT_SECONDS, TimeUnit.SECONDS);
+            if (!isReadLocked) {
                 log.warn("Acquire read lock timeout for product ID: {}", id);
                 throw new RuntimeException("获取读锁超时，请稍后再试");
             }
-            log.info("Acquired read lock for product ID: {}", id);
 
-            // 2) 读缓存：命中直接返回
+            // 读缓存：命中直接返回
             Product cachedProduct = bucket.get();
             if (cachedProduct != null) {
-                if (isNullProduct(cachedProduct)) {
-                    log.info("Cache hit (product not exists) for product ID: {}", id);
-                    return null;
-                }
                 log.info("Cache hit for product ID: {}", id);
-                return cachedProduct;
+                return isNullProduct(cachedProduct) ? null : cachedProduct;
             }
 
         } catch (InterruptedException e) {
@@ -118,70 +117,63 @@ public class ProductService {
             log.error("Acquiring read lock was interrupted for product ID: {}", id, e);
             throw new RuntimeException("系统繁忙，获取信息失败", e);
         } finally {
-            // 释放读锁
-            if (isLocked) {
+            if (isReadLocked) {
                 rwLock.readLock().unlock();
-                log.info("Released read lock for product ID: {}", id);
             }
         }
 
-        // 3) 缓存未命中：尝试短写锁，做单线程回填
-        boolean writeLocked = false;
+        // 2) 缓存未命中：尝试写锁回填
+        boolean isWriteLocked = false;
         try {
-            writeLocked = rwLock.writeLock().tryLock(WRITE_LOCK_WAIT_MILLIS, TimeUnit.MILLISECONDS);
-            if (writeLocked) {
-                log.info("Acquired write lock for product ID: {}", id);
-
-                // 3.1) 写锁到手后二次检查缓存，避免重复回填
-                Product cachedProduct = bucket.get();
-                if (cachedProduct != null) {
-                    if (isNullProduct(cachedProduct)) {
-                        log.info("Cache hit (product not exists) after write lock for product ID: {}", id);
-                        return null;
-                    }
-                    log.info("Cache hit after write lock for product ID: {}", id);
-                    return cachedProduct;
-                }
-
-                // 3.2) 仍未命中则查询数据库并回写缓存
-                log.info("Cache miss for product ID: {}, querying DB...", id);
-                Product dbProduct = productDatabase.get(id);
-                if (dbProduct != null) {
-                    Duration ttl = productCacheTtlWithJitter();
-                    bucket.set(dbProduct, ttl);
-                    log.info("Updated cache for product ID: {} with TTL {}s", id, ttl.toSeconds());
-                } else {
-                    // 缓存空值，短 TTL + 抖动，防止缓存穿透与雪崩
-                    Duration nullTtl = nullCacheTtlWithJitter();
-                    bucket.set(NULL_PRODUCT, nullTtl);
-                    log.info("Cached null (product not exists) for product ID: {} with TTL {}s", id, nullTtl.toSeconds());
-                }
-                return dbProduct;
+            isWriteLocked = rwLock.writeLock().tryLock(WRITE_LOCK_WAIT_MILLIS, TimeUnit.MILLISECONDS);
+            if (isWriteLocked) {
+                return loadAndSetCache(bucket, rwLock, id);
             }
-
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.error("Acquiring write lock was interrupted for product ID: {}", id, e);
             throw new RuntimeException("系统繁忙，获取信息失败", e);
         } finally {
-            if (writeLocked && rwLock.writeLock().isHeldByCurrentThread()) {
+            if (isWriteLocked && rwLock.writeLock().isHeldByCurrentThread()) {
                 rwLock.writeLock().unlock();
-                log.info("Released write lock for product ID: {}", id);
             }
         }
 
-        // 4) 写锁未获取到：短暂重试读取缓存，避免误判不存在
+        // 3) 写锁未获取到：重试读取缓存（其他线程可能已回填）
+        return retryReadCache(bucket, id);
+    }
+
+    /**
+     * 加载数据并回填缓存（写锁持有期间调用）
+     */
+    private Product loadAndSetCache(RBucket<Product> bucket, RReadWriteLock rwLock, Long id) {
+        // 二次检查：避免重复回填
+        Product cachedProduct = bucket.get();
+        if (cachedProduct != null) {
+            log.info("Cache hit after write lock for product ID: {}", id);
+            return isNullProduct(cachedProduct) ? null : cachedProduct;
+        }
+
+        // 查询数据库并回填
+        log.info("Cache miss for product ID: {}, querying DB...", id);
+        Product dbProduct = productDatabase.get(id);
+        Duration ttl = (dbProduct != null) ? productCacheTtlWithJitter() : nullCacheTtlWithJitter();
+        bucket.set(dbProduct != null ? dbProduct : NULL_PRODUCT, ttl);
+        log.info("Cached {} for product ID: {} with TTL {}s",
+                dbProduct != null ? "product" : "null", id, ttl.toSeconds());
+        return dbProduct;
+    }
+
+    /**
+     * 重试读取缓存（写锁获取失败时调用）
+     */
+    private Product retryReadCache(RBucket<Product> bucket, Long id) {
         for (int i = 0; i < CACHE_RETRY_TIMES; i++) {
             Product cachedProduct = bucket.get();
             if (cachedProduct != null) {
-                if (isNullProduct(cachedProduct)) {
-                    log.info("Cache hit (product not exists) after retry for product ID: {}", id);
-                    return null;
-                }
                 log.info("Cache hit after retry for product ID: {}", id);
-                return cachedProduct;
+                return isNullProduct(cachedProduct) ? null : cachedProduct;
             }
-            // 短暂等待，让持有写锁的线程完成回填
             try {
                 Thread.sleep(CACHE_RETRY_SLEEP_MILLIS);
             } catch (InterruptedException e) {
@@ -190,8 +182,6 @@ public class ProductService {
                 throw new RuntimeException("系统繁忙，获取信息失败", e);
             }
         }
-
-        // 5) 仍未命中：明确告知繁忙，避免把“未回填”当作“无数据”
         throw new RuntimeException("系统繁忙，请稍后再试");
     }
 
@@ -279,6 +269,7 @@ public class ProductService {
      *
      * @param bucket 缓存桶
      * @param id 商品 ID
+     * @throws RuntimeException 重试多次后仍删除失败时抛出
      */
     private void deleteCacheWithRetry(RBucket<Product> bucket, Long id) {
         for (int i = 0; i < CACHE_DELETE_RETRY_TIMES; i++) {
@@ -300,5 +291,6 @@ public class ProductService {
             }
         }
         log.error("Cache delete failed after {} retries for product ID: {}", CACHE_DELETE_RETRY_TIMES, id);
+        throw new RuntimeException("删除缓存失败，可能导致数据不一致");
     }
 }

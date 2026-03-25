@@ -2,6 +2,7 @@ package com.example.redisson.controller;
 
 import com.example.redisson.entity.Product;
 import com.example.redisson.service.ProductService;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -32,11 +33,12 @@ public class ProductController {
      * 根据商品 ID 获取商品信息
      *
      * @param id 商品 ID
-     * @return 商品详情
+     * @return 商品详情，404 如果不存在
      */
     @GetMapping("/{id}")
-    public Product getProduct(@PathVariable("id") Long id) {
-        return productService.getProduct(id);
+    public ResponseEntity<Product> getProduct(@PathVariable("id") Long id) {
+        Product product = productService.getProduct(id);
+        return product != null ? ResponseEntity.ok(product) : ResponseEntity.notFound().build();
     }
 
     /**
@@ -46,7 +48,7 @@ public class ProductController {
      * @return 更新后的商品信息
      */
     @PostMapping
-    public Product updateProduct(@RequestBody Product product) {
-        return productService.updateProduct(product);
+    public ResponseEntity<Product> updateProduct(@RequestBody Product product) {
+        return ResponseEntity.ok(productService.updateProduct(product));
     }
 }
